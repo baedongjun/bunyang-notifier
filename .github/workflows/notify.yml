@@ -1,0 +1,55 @@
+name: bunyang-notify
+
+on:
+  schedule:
+    - cron: "0 0 * * *"   # 매일 09:00 KST (UTC 00:00). 분양 공고는 자주 안 뜨므로 1일 1회면 충분
+  workflow_dispatch:       # 수동 실행 버튼
+
+permissions:
+  contents: write          # state/seen.json 커밋용
+
+concurrency:               # 중복 실행 방지
+  group: bunyang-notify
+  cancel-in-progress: false
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - run: pip install -r requirements.txt
+
+      - name: Run notifier
+        id: run
+        env:
+          DATA_GO_KR_KEY:      ${{ secrets.DATA_GO_KR_KEY }}
+          REALPRICE_KEY:       ${{ secrets.REALPRICE_KEY }}      # 키가 다르면 별도 등록(없으면 위 키 재사용)
+          KAKAO_REST_API_KEY:  ${{ secrets.KAKAO_REST_API_KEY }}
+          KAKAO_CLIENT_SECRET: ${{ secrets.KAKAO_CLIENT_SECRET }}
+          KAKAO_REFRESH_TOKEN: ${{ secrets.KAKAO_REFRESH_TOKEN }}
+        run: python -m app.notifier
+
+      # 새 refresh_token이 내려온 경우에만 Secret 갱신 (PAT 필요)
+      - name: Rotate refresh token
+        if: steps.run.outputs.new_refresh_token != '' && env.GH_PAT != ''
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+          GH_PAT: ${{ secrets.GH_PAT }}
+        run: |
+          gh secret set KAKAO_REFRESH_TOKEN \
+            --body "${{ steps.run.outputs.new_refresh_token }}" \
+            --repo "${{ github.repository }}"
+
+      # 중복 알림 방지 기록을 repo에 저장
+      - name: Persist seen state
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add state/seen.json || true
+          git diff --cached --quiet || git commit -m "chore: update seen state [skip ci]"
+          git push || true
