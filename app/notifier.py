@@ -27,8 +27,18 @@ def _match_region(notice: dict, regions: list[dict]) -> dict | None:
     return None
 
 
+def _int(v) -> int:
+    try:
+        return int(str(v).replace(",", ""))
+    except (TypeError, ValueError):
+        return 0
+
+
 def _type_lines(models: list[dict]) -> list[str]:
-    """주택형별: 전용면적·세대수·분양가·평단가 한 줄씩 (전용면적 오름차순)."""
+    """주택형별: 전용면적·총세대(일반+특공)·분양가·평단가 한 줄씩 (전용면적 오름차순).
+
+    SUPLY_HSHLDCO = 일반공급, SPSPLY_HSHLDCO = 특별공급 → 총세대 = 둘의 합.
+    """
     rows = []
     for m in models:
         area = scoring._exclusive_area(m)
@@ -36,18 +46,18 @@ def _type_lines(models: list[dict]) -> list[str]:
         if not (area and amount):
             continue
         suffix = re.sub(r"^[0-9.]+", "", str(m.get("HOUSE_TY", ""))).strip()  # 'A','B'...
-        try:
-            hh = int(str(m.get("SUPLY_HSHLDCO", "0")).replace(",", ""))
-        except ValueError:
-            hh = 0
-        rows.append((area, suffix, hh, amount))
+        gen = _int(m.get("SUPLY_HSHLDCO"))         # 일반공급
+        special = _int(m.get("SPSPLY_HSHLDCO"))    # 특별공급
+        rows.append((area, suffix, gen, special, amount))
     rows.sort(key=lambda r: (r[0], r[1]))
 
     lines = []
-    for area, suffix, hh, amount in rows[:MAX_TYPE_LINES]:
+    for area, suffix, gen, special, amount in rows[:MAX_TYPE_LINES]:
         unit = round(amount / area)
+        total = gen + special
         lines.append(
-            f"·{area:.0f}㎡{suffix} {hh}세대 {amount/10000:.1f}억({unit}만/㎡)"
+            f"·{area:.0f}㎡{suffix} {total}세대(일반{gen}/특공{special}) "
+            f"{amount/10000:.1f}억({unit}만/㎡)"
         )
     if len(rows) > MAX_TYPE_LINES:
         lines.append(f"…외 {len(rows) - MAX_TYPE_LINES}개 타입(공고문 참고)")
