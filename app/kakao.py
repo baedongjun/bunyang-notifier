@@ -30,17 +30,27 @@ def refresh_access_token(rest_key: str, refresh_token: str,
     return body["access_token"], body.get("refresh_token")
 
 
-def send_text(access_token: str, text: str, link_url: str = "https://www.applyhome.co.kr",
-              button_title: str = "청약홈에서 보기") -> dict:
-    """text 템플릿으로 나에게 보내기. text는 최대 200자."""
+def _post(access_token: str, template: dict) -> dict:
     headers = {"Authorization": f"Bearer {access_token}"}
-    template = {
-        "object_type": "text",
-        "text": text[:200],
-        "link": {"web_url": link_url, "mobile_web_url": link_url},
-        "button_title": button_title,
-    }
     data = {"template_object": json.dumps(template, ensure_ascii=False)}
     r = requests.post(SEND_URL, headers=headers, data=data, timeout=TIMEOUT)
     r.raise_for_status()
     return r.json()  # {"result_code": 0}
+
+
+def send_text(access_token: str, text: str, link_url: str = "",
+              button_title: str = "") -> dict:
+    """text 템플릿으로 나에게 보내기. text는 최대 200자.
+
+    button_title을 비우면 버튼을 만들지 않습니다 → PC 카카오톡에서
+    '모바일에서 확인해주세요' 문구가 뜨지 않음(링크는 본문에 텍스트로 넣을 것).
+    """
+    template = {
+        "object_type": "text",
+        "text": text[:200],
+        # 버튼이 없을 땐 빈 link 객체 → 메시지에 별도 액션이 붙지 않음
+        "link": {"web_url": link_url, "mobile_web_url": link_url} if link_url else {},
+    }
+    if button_title:
+        template["button_title"] = button_title
+    return _post(access_token, template)

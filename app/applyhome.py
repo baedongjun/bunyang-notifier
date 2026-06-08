@@ -52,7 +52,8 @@ def fetch_private_apt_notices(service_key: str, house_secd: str,
 
 def fetch_supply_models(service_key: str, house_manage_no: str,
                         pblanc_no: str) -> list[dict]:
-    """주택형별 공급정보(분양가 포함). SUPLY_AMOUNT(만원), EXCLUSE_AR(전용㎡)."""
+    """주택형별 공급정보(분양가 포함). LTTOT_TOP_AMOUNT(분양최고금액, 만원),
+    HOUSE_TY(예 '084.6388A'=전용 84.64㎡), SUPLY_AR(공급면적)."""
     conds = {
         "cond[HOUSE_MANAGE_NO::EQ]": house_manage_no,
         "cond[PBLANC_NO::EQ]": pblanc_no,

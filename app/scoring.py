@@ -11,22 +11,54 @@
 """
 from __future__ import annotations
 
+import re
 from statistics import median
 
 
-def _offer_unit_price(models: list[dict]) -> tuple[float | None, float, float]:
-    """주택형별 공급정보 → 대표 분양 평단가(만원/㎡)와 전용면적 min/max.
+def _exclusive_area(model: dict) -> float | None:
+    """전용면적(㎡). 청약홈 APT Mdl은 HOUSE_TY(예: '084.6388A')에 전용면적을 담고 있음.
 
-    SUPLY_AMOUNT(만원, 최고분양가), EXCLUSE_AR(전용㎡).
+    실거래가(전용면적 기준)와 공정 비교를 위해 공급면적(SUPLY_AR)이 아닌 전용면적 사용.
     """
-    units, areas = [], []
-    for m in models:
+    ty = str(model.get("HOUSE_TY", ""))
+    m = re.match(r"\s*([0-9]+\.?[0-9]*)", ty)
+    if m:
         try:
-            amount = float(str(m.get("SUPLY_AMOUNT", "")).replace(",", ""))
-            area = float(str(m.get("EXCLUSE_AR", "")).replace(",", ""))
+            area = float(m.group(1))
+            if area > 0:
+                return area
+        except ValueError:
+            pass
+    # 혹시 전용면적 필드가 별도로 오는 데이터셋 대비 폴백
+    for key in ("EXCLUSE_AR", "EXCLU_AR"):
+        try:
+            area = float(str(model.get(key, "")).replace(",", ""))
+            if area > 0:
+                return area
         except (TypeError, ValueError):
             continue
-        if amount > 0 and area > 0:
+    return None
+
+
+def _offer_amount(model: dict) -> float | None:
+    """분양 최고금액(만원). APT Mdl은 LTTOT_TOP_AMOUNT."""
+    for key in ("LTTOT_TOP_AMOUNT", "SUPLY_AMOUNT"):
+        try:
+            amount = float(str(model.get(key, "")).replace(",", ""))
+            if amount > 0:
+                return amount
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def _offer_unit_price(models: list[dict]) -> tuple[float | None, float, float]:
+    """주택형별 공급정보 → 대표 분양 평단가(만원/㎡, 전용기준)와 전용면적 min/max."""
+    units, areas = [], []
+    for m in models:
+        amount = _offer_amount(m)
+        area = _exclusive_area(m)
+        if amount and area:
             units.append(amount / area)
             areas.append(area)
     if not units:
