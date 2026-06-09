@@ -1,7 +1,9 @@
 """청약홈 분양정보 조회 (한국부동산원, 공공데이터포털).
 
-- getAPTLttotPblancDetail : APT 분양 공고 목록
-- getAPTLttotPblancMdl    : 주택형별 분양가(공급금액)
+- getAPTLttotPblancDetail    : APT 일반 분양 공고 목록
+- getAPTLttotPblancMdl       : 〃 주택형별 분양가
+- getRemndrLttotPblancDetail : 무순위/잔여세대(줍줍)·불법행위 재공급 공고 목록
+- getRemndrLttotPblancMdl    : 〃 주택형별 분양가
 """
 from __future__ import annotations
 
@@ -10,6 +12,11 @@ import requests
 BASE = "https://api.odcloud.kr/api/ApplyhomeInfoDetailSvc/v1"
 DETAIL_URL = f"{BASE}/getAPTLttotPblancDetail"
 MDL_URL = f"{BASE}/getAPTLttotPblancMdl"
+REMNDR_URL = f"{BASE}/getRemndrLttotPblancDetail"
+REMNDR_MDL_URL = f"{BASE}/getRemndrLttotPblancMdl"
+
+# Mdl(분양가) 조회 URL 매핑 — source 키로 선택
+MDL_BY_SOURCE = {"apt": MDL_URL, "remndr": REMNDR_MDL_URL}
 
 TIMEOUT = 15
 
@@ -50,16 +57,29 @@ def fetch_private_apt_notices(service_key: str, house_secd: str,
     return _get(DETAIL_URL, service_key, conds)
 
 
+def fetch_remndr_notices(service_key: str, since_date: str) -> list[dict]:
+    """무순위/잔여세대(줍줍) + 불법행위 재공급 공고 목록.
+
+    HOUSE_SECD: 04=무순위, 06=불법행위 재공급. (민영/국민 구분 없음 → 전부 수집)
+    since_date: 'YYYY-MM-DD' — 모집공고일 이후만.
+    """
+    conds = {"cond[RCRIT_PBLANC_DE::GTE]": since_date}
+    return _get(REMNDR_URL, service_key, conds)
+
+
 def fetch_supply_models(service_key: str, house_manage_no: str,
-                        pblanc_no: str) -> list[dict]:
+                        pblanc_no: str, source: str = "apt") -> list[dict]:
     """주택형별 공급정보(분양가 포함). LTTOT_TOP_AMOUNT(분양최고금액, 만원),
-    HOUSE_TY(예 '084.6388A'=전용 84.64㎡), SUPLY_AR(공급면적)."""
+    HOUSE_TY(예 '084.6388A'=전용 84.64㎡).
+
+    source: 'apt'(일반분양) | 'remndr'(무순위·재공급) — Mdl URL 선택.
+    """
     conds = {
         "cond[HOUSE_MANAGE_NO::EQ]": house_manage_no,
         "cond[PBLANC_NO::EQ]": pblanc_no,
     }
     try:
-        return _get(MDL_URL, service_key, conds)
+        return _get(MDL_BY_SOURCE.get(source, MDL_URL), service_key, conds)
     except Exception:
         # 분양가 조회 실패해도 공고 알림 자체는 진행
         return []

@@ -64,14 +64,28 @@ def _type_lines(models: list[dict]) -> list[str]:
     return lines
 
 
+def _rcept(notice: dict) -> str:
+    """청약접수 기간 문자열. 공고 종류마다 필드명이 달라 순서대로 탐색."""
+    pairs = [
+        ("RCEPT_BGNDE", "RCEPT_ENDDE"),                  # 일반 분양
+        ("SUBSCRPT_RCEPT_BGNDE", "SUBSCRPT_RCEPT_ENDDE"),  # 무순위/재공급
+        ("GNRL_RCEPT_BGNDE", "GNRL_RCEPT_ENDDE"),
+        ("CNTRCT_CNCLS_BGNDE", "CNTRCT_CNCLS_ENDDE"),
+    ]
+    for b, e in pairs:
+        if notice.get(b) or notice.get(e):
+            return f"{notice.get(b, '?')}~{notice.get(e, '?')}"
+    return "공고문 참고"
+
+
 def _build_messages(notice: dict, region: dict, ev: dict,
-                    models: list[dict]) -> list[str]:
+                    models: list[dict], kind: str = "민간분양") -> list[str]:
     """연속 발송할 카카오 메시지 목록(각 200자 이내). 1통=요약, 2통+=타입별 분양가."""
     name = notice.get("HOUSE_NM", "(공고명 미상)")
     if len(name) > 30:
         name = name[:29] + "…"
     households = notice.get("TOT_SUPLY_HSHLDCO", "-")
-    rcept = f"{notice.get('RCEPT_BGNDE', '?')}~{notice.get('RCEPT_ENDDE', '?')}"
+    rcept = _rcept(notice)
 
     if ev["score"] is not None:
         head = f"🎯 {ev['score']}/100 ({ev['confidence']})"
@@ -80,7 +94,7 @@ def _build_messages(notice: dict, region: dict, ev: dict,
 
     # --- 1통: 요약 ---
     summary = [
-        f"🏠[민간분양] {name}",
+        f"🏠[{kind}] {name}",
         f"📍{region['name']} · 총 {households}세대",
         head,
         f"💰{ev['reason']}",
@@ -127,14 +141,34 @@ def run() -> None:
     dry = os.environ.get("DRY_RUN") == "1"
 
     since = (date.today() - timedelta(days=cfg.filters["recent_days"])).isoformat()
-    print(f"[1] 민간분양 공고 조회 (모집공고일 >= {since}) ...")
-    notices = applyhome.fetch_private_apt_notices(
-        cfg.applyhome_key,
-        cfg.filters["house_secd"],
-        cfg.filters["house_dtl_secd"],
-        since,
-    )
-    print(f"    전체 민간분양 APT 공고: {len(notices)}건")
+    f = cfg.filters
+
+    # (공고 dict, source, 종류라벨) 통합 목록
+    records: list[tuple[dict, str, str]] = []
+
+    if f.get("include_private", True):
+        print(f"[1] 민간분양 공고 조회 (모집공고일 >= {since}) ...")
+        priv = applyhome.fetch_private_apt_notices(
+            cfg.applyhome_key, f["house_secd"], f["house_dtl_secd"], since)
+        print(f"    민간분양 APT: {len(priv)}건")
+        records += [(n, "apt", "민간분양") for n in priv]
+
+    if f.get("include_unranked", True) or f.get("include_resupply", True):
+        print(f"[2] 무순위/재공급 공고 조회 (모집공고일 >= {since}) ...")
+        remndr = applyhome.fetch_remndr_notices(cfg.applyhome_key, since)
+        # HOUSE_SECD: 04=무순위, 06=불법행위 재공급
+        kept = 0
+        for n in remndr:
+            secd = str(n.get("HOUSE_SECD"))
+            if secd == "04" and f.get("include_unranked", True):
+                records.append((n, "remndr", n.get("HOUSE_SECD_NM") or "무순위"))
+                kept += 1
+            elif secd == "06" and f.get("include_resupply", True):
+                records.append((n, "remndr", n.get("HOUSE_SECD_NM") or "불법행위 재공급"))
+                kept += 1
+        print(f"    무순위/재공급: {kept}건")
+
+    print(f"    합계 {len(records)}건 대상으로 관심지역 매칭 시작")
 
     seen = state.load_seen(cfg.state_path)
     trade_cache: dict[str, list[dict]] = {}
@@ -142,29 +176,37 @@ def run() -> None:
     access_token: str | None = None
     sent = 0
 
-    for notice in notices:
+    for notice, source, kind in records:
         region = _match_region(notice, cfg.regions)
         if region is None:
             continue
 
-        pblanc_no = str(notice.get("PBLANC_NO") or notice.get("HOUSE_MANAGE_NO"))
+        # 공고번호+종류로 중복키 (같은 단지의 분양/무순위가 따로 알림되도록 source 포함)
+        pblanc_no = f"{source}:{notice.get('PBLANC_NO') or notice.get('HOUSE_MANAGE_NO')}"
         if pblanc_no in seen:
             continue
 
-        print(f"[*] 관심지역 신규 공고: {notice.get('HOUSE_NM')} ({region['name']})")
+        print(f"[*] 신규 [{kind}] {notice.get('HOUSE_NM')} ({region['name']})")
 
         # 분양가(주택형별)
         models = applyhome.fetch_supply_models(
             cfg.applyhome_key,
             str(notice.get("HOUSE_MANAGE_NO")),
-            pblanc_no,
+            str(notice.get("PBLANC_NO") or notice.get("HOUSE_MANAGE_NO")),
+            source=source,
         )
-        # 주변 실거래가 (지역별 1회만 조회 후 캐시)
-        lawd = region["lawd_cd"]
-        if lawd not in trade_cache:
-            trade_cache[lawd] = realprice.fetch_trades(
-                cfg.realprice_key, lawd, cfg.scoring["trade_months"])
-        trades = trade_cache[lawd]
+        # 주변 실거래가 (지역별 1회만 조회 후 캐시). lawd_cd는 문자열 또는 리스트 허용.
+        codes = region["lawd_cd"]
+        if isinstance(codes, str):
+            codes = [codes]
+        cache_key = ",".join(codes)
+        if cache_key not in trade_cache:
+            merged: list[dict] = []
+            for c in codes:
+                merged += realprice.fetch_trades(
+                    cfg.realprice_key, c, cfg.scoring["trade_months"])
+            trade_cache[cache_key] = merged
+        trades = trade_cache[cache_key]
 
         ev = scoring.evaluate(notice, models, trades, cfg.scoring, region)
 
@@ -173,7 +215,7 @@ def run() -> None:
             seen.add(pblanc_no)
             continue
 
-        messages = _build_messages(notice, region, ev, models)
+        messages = _build_messages(notice, region, ev, models, kind=kind)
         for i, m in enumerate(messages, 1):
             print(f"    --- 메시지 {i}/{len(messages)} ({len(m)}자) ---")
             print("    " + m.replace("\n", "\n    "))
