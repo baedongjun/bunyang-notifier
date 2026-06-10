@@ -2,7 +2,9 @@ name: bunyang-notify
 
 on:
   schedule:
-    - cron: "0 0 * * *"   # 매일 09:00 KST (UTC 00:00). 분양 공고는 자주 안 뜨므로 1일 1회면 충분
+    # 6시간마다 (UTC 0/6/12/18 = KST 09/15/21/03). 무순위/줍줍은 접수창이 짧아
+    # 자주 확인해야 모집공고 직후 빨리 잡아 리드타임을 확보할 수 있음.
+    - cron: "0 0,6,12,18 * * *"
   workflow_dispatch:       # 수동 실행 버튼
 
 permissions:

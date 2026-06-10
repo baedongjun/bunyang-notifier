@@ -64,18 +64,44 @@ def _type_lines(models: list[dict]) -> list[str]:
     return lines
 
 
-def _rcept(notice: dict) -> str:
-    """청약접수 기간 문자열. 공고 종류마다 필드명이 달라 순서대로 탐색."""
-    pairs = [
-        ("RCEPT_BGNDE", "RCEPT_ENDDE"),                  # 일반 분양
-        ("SUBSCRPT_RCEPT_BGNDE", "SUBSCRPT_RCEPT_ENDDE"),  # 무순위/재공급
-        ("GNRL_RCEPT_BGNDE", "GNRL_RCEPT_ENDDE"),
-        ("CNTRCT_CNCLS_BGNDE", "CNTRCT_CNCLS_ENDDE"),
-    ]
-    for b, e in pairs:
+_RCEPT_FIELDS = [
+    ("RCEPT_BGNDE", "RCEPT_ENDDE"),                     # 일반 분양(1순위)
+    ("SUBSCRPT_RCEPT_BGNDE", "SUBSCRPT_RCEPT_ENDDE"),   # 무순위/재공급
+    ("GNRL_RCEPT_BGNDE", "GNRL_RCEPT_ENDDE"),
+    ("CNTRCT_CNCLS_BGNDE", "CNTRCT_CNCLS_ENDDE"),
+]
+
+
+def _parse_date(s) -> date | None:
+    try:
+        return date.fromisoformat(str(s)[:10])
+    except (TypeError, ValueError):
+        return None
+
+
+def _receipt_dates(notice: dict) -> tuple[date | None, date | None]:
+    """청약접수 (시작일, 종료일)을 date로. 공고 종류마다 필드명이 달라 순서 탐색."""
+    for b, e in _RCEPT_FIELDS:
         if notice.get(b) or notice.get(e):
-            return f"{notice.get(b, '?')}~{notice.get(e, '?')}"
-    return "공고문 참고"
+            return _parse_date(notice.get(b)), _parse_date(notice.get(e))
+    return None, None
+
+
+def _rcept(notice: dict) -> str:
+    """접수기간 + 긴급도(D-day) 문자열."""
+    bgn, end = _receipt_dates(notice)
+    if not (bgn or end):
+        return "공고문 참고"
+    span = f"{bgn or '?'}~{end or '?'}" if bgn != end else f"{bgn}"
+    today = date.today()
+    tag = ""
+    if end and end < today:
+        tag = " (마감)"
+    elif bgn and bgn > today:
+        tag = f" (D-{(bgn - today).days})"
+    elif (bgn and bgn <= today) and (end and end >= today):
+        tag = " 🔴오늘마감" if end == today else " 🔴접수중"
+    return span + tag
 
 
 def _build_messages(notice: dict, region: dict, ev: dict,
@@ -184,6 +210,12 @@ def run() -> None:
         # 공고번호+종류로 중복키 (같은 단지의 분양/무순위가 따로 알림되도록 source 포함)
         pblanc_no = f"{source}:{notice.get('PBLANC_NO') or notice.get('HOUSE_MANAGE_NO')}"
         if pblanc_no in seen:
+            continue
+
+        # 접수 마감 지난 공고는 알림 제외 (청약 불가)
+        _, end = _receipt_dates(notice)
+        if cfg.filters.get("skip_closed", True) and end and end < date.today():
+            seen.add(pblanc_no)        # 다시 평가하지 않도록 기록만
             continue
 
         print(f"[*] 신규 [{kind}] {notice.get('HOUSE_NM')} ({region['name']})")
